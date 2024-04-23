@@ -1,19 +1,23 @@
-//! This example shows how to use USB (Universal Serial Bus) in the RP2040 chip.
-//!
-//! This creates the possibility to send log::info/warn/error/debug! to USB serial port.
+//! This example test the ADC (Analog to Digital Conversion) of the RS2040 pin 26, 27 and 28.
+//! It also reads the temperature sensor in the chip.
 
 #![no_std]
 #![no_main]
 
+use defmt::*;
 use embassy_executor::Spawner;
+use embassy_rp::adc::{Adc, Channel, Config, InterruptHandler};
 use embassy_rp::bind_interrupts;
-use embassy_rp::peripherals::USB;
-use embassy_rp::usb::{Driver, InterruptHandler};
+use embassy_rp::gpio::Pull;
 use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
+use embassy_rp::peripherals::USB;
+use embassy_rp::usb::{Driver, InterruptHandler as USBInterruptHandler};
+
 bind_interrupts!(struct Irqs {
-    USBCTRL_IRQ => InterruptHandler<USB>;
+    ADC_IRQ_FIFO => InterruptHandler;
+    USBCTRL_IRQ => USBInterruptHandler<USB>;
 });
 
 #[embassy_executor::task]
@@ -24,13 +28,32 @@ async fn logger_task(driver: Driver<'static, USB>) {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+    let mut adc = Adc::new(p.ADC, Irqs, Config::default());
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(logger_task(driver)).unwrap();
 
-    let mut counter = 0;
+    let mut p26 = Channel::new_pin(p.PIN_26, Pull::None);
+    let mut p27 = Channel::new_pin(p.PIN_27, Pull::None);
+    let mut p28 = Channel::new_pin(p.PIN_28, Pull::None);
+    let mut ts = Channel::new_temp_sensor(p.ADC_TEMP_SENSOR);
+
     loop {
-        counter += 1;
-        log::info!("Tick {}", counter);
+        let level = adc.read(&mut p26).await.unwrap();
+        log::info!("Pin 26 ADC: {}", level);
+        let level = adc.read(&mut p27).await.unwrap();
+        log::info!("Pin 27 ADC: {}", level);
+        let level = adc.read(&mut p28).await.unwrap();
+        log::info!("Pin 28 ADC: {}", level);
+        let temp = adc.read(&mut ts).await.unwrap();
+        log::info!("Temp: {} degrees", convert_to_celsius(temp));
         Timer::after_secs(1).await;
     }
+}
+
+fn convert_to_celsius(raw_temp: u16) -> f32 {
+    // According to chapter 4.9.5. Temperature Sensor in RP2040 datasheet
+    let temp = 27.0 - (raw_temp as f32 * 3.3 / 4096.0 - 0.706) / 0.001721;
+    let sign = if temp < 0.0 { -1.0 } else { 1.0 };
+    let rounded_temp_x10: i16 = ((temp * 10.0) + 0.5 * sign) as i16;
+    (rounded_temp_x10 as f32) / 10.0
 }
