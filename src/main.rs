@@ -1,92 +1,36 @@
-//! # Pico Blinky Example
+//! This example shows how to use USB (Universal Serial Bus) in the RP2040 chip.
 //!
-//! Blinks the LED on a Pico board.
-//!
-//! This will blink an LED attached to GP25, which is the pin the Pico uses for
-//! the on-board LED.
-//!
-//! See the `Cargo.toml` file for Copyright and license details.
+//! This creates the possibility to send log::info/warn/error/debug! to USB serial port.
 
 #![no_std]
 #![no_main]
 
-// The macro for our start-up function
-use rp_pico::entry;
+use embassy_executor::Spawner;
+use embassy_rp::bind_interrupts;
+use embassy_rp::peripherals::USB;
+use embassy_rp::usb::{Driver, InterruptHandler};
+use embassy_time::Timer;
+use {defmt_rtt as _, panic_probe as _};
 
-// GPIO traits
-use embedded_hal::digital::OutputPin;
+bind_interrupts!(struct Irqs {
+    USBCTRL_IRQ => InterruptHandler<USB>;
+});
 
-// Ensure we halt the program on panic (if we don't mention this crate it won't
-// be linked)
-use panic_halt as _;
-
-// Pull in any important traits
-use rp_pico::hal::prelude::*;
-
-// A shorter alias for the Peripheral Access Crate, which provides low-level
-// register access
-use rp_pico::hal::pac;
-
-// A shorter alias for the Hardware Abstraction Layer, which provides
-// higher-level drivers.
-use rp_pico::hal;
-
-/// Entry point to our bare-metal application.
-///
-/// The `#[entry]` macro ensures the Cortex-M start-up code calls this function
-/// as soon as all global variables are initialised.
-///
-/// The function configures the RP2040 peripherals, then blinks the LED in an
-/// infinite loop.
-#[entry]
-fn main() -> ! {
-    // Grab our singleton objects
-    let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
-
-    // Set up the watchdog driver - needed by the clock setup code
-    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
-
-    // Configure the clocks
-    //
-    // The default is to generate a 125 MHz system clock
-    let clocks = hal::clocks::init_clocks_and_plls(
-        rp_pico::XOSC_CRYSTAL_FREQ,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
-
-    // The delay object lets us wait for specified amounts of time (in
-    // milliseconds)
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
-
-    // The single-cycle I/O block controls our GPIO pins
-    let sio = hal::Sio::new(pac.SIO);
-
-    // Set the pins up according to their function on this particular board
-    let pins = rp_pico::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
-    );
-
-    // Set the LED to be an output
-    let mut led_pin = pins.gpio20.into_push_pull_output();
-
-    // Blink the LED at 1 Hz
-    loop {
-        led_pin.set_high().unwrap();
-        delay.delay_ms(500);
-        led_pin.set_low().unwrap();
-        delay.delay_ms(500);
-    }
+#[embassy_executor::task]
+async fn logger_task(driver: Driver<'static, USB>) {
+    embassy_usb_logger::run!(1024, log::LevelFilter::Info, driver);
 }
 
-// End of file
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_rp::init(Default::default());
+    let driver = Driver::new(p.USB, Irqs);
+    spawner.spawn(logger_task(driver)).unwrap();
+
+    let mut counter = 0;
+    loop {
+        counter += 1;
+        log::info!("Tick {}", counter);
+        Timer::after_secs(1).await;
+    }
+}
